@@ -1,0 +1,25 @@
+# SRT SLURM Configuration
+# This file provides cluster-specific defaults and settings for srtctl
+
+# Default SLURM settings
+default_account: "jinyanc"
+default_partition: "main"
+default_time_limit: "4:00:00"
+
+# Resource defaults
+gpus_per_node: 8
+
+# SLURM directive compatibility
+use_gpus_per_node_directive: true
+use_segment_sbatch_directive: true
+
+# Path to srtctl repo root (where scripts/templates/ lives)
+srtctl_root: "/home/jinyanc/github/srt-slurm"
+
+# Model path aliases
+model_paths:
+  dsfp8: "/models/dsr1-fp8/"
+
+# Container aliases
+containers:
+  lmsysorg/sglang:v0.5.8-cu130-runtime: "/home/jinyanc/github/srt-slurm/lmsysorg+sglang+v0.5.8-cu130-runtime.sqsh"
