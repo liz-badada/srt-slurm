@@ -10,7 +10,7 @@ resources:
   prefill_nodes: 2
   prefill_workers: 1
   decode_nodes: 2
-  decode_workers: 2
+  decode_workers: 1
   gpus_per_node: 8
 
 backend:
@@ -108,5 +108,5 @@ benchmark:
   type: "sa-bench"
   isl: 8192
   osl: 1024
-  concurrencies: "64x128x256"
+  concurrencies: "32x64x128x256"
   req_rate: "inf"

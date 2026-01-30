@@ -31,6 +31,8 @@ class BenchmarkResult:
     total_throughput: float   # tok/s
     median_ttft: float        # ms
     median_tpot: float        # ms
+    isl: int = 0              # input sequence length
+    osl: int = 0              # output sequence length
     
     @property
     def otpt_per_user(self) -> float:
@@ -124,12 +126,19 @@ def parse_benchmark_file(filepath: Path) -> List[BenchmarkResult]:
     with open(filepath, 'r') as f:
         content = f.read()
     
-    # Split by benchmark runs - look for "Running benchmark with concurrency" or results blocks
-    # Pattern to match a complete benchmark result block
-    pattern = r'(?:Running benchmark with concurrency:\s*(\d+)|Warming up with concurrency\s+(\d+)).*?(?=Running benchmark|Warming up|SA-Bench complete|$)'
-    
-    # Alternative: parse line by line
     lines = content.split('\n')
+    
+    # Extract ISL/OSL from config line (first line usually)
+    isl, osl = 0, 0
+    for line in lines[:10]:  # Check first 10 lines
+        if 'SA-Bench Config:' in line or 'isl=' in line:
+            isl_match = re.search(r'isl[=:]\s*(\d+)', line)
+            osl_match = re.search(r'osl[=:]\s*(\d+)', line)
+            if isl_match:
+                isl = int(isl_match.group(1))
+            if osl_match:
+                osl = int(osl_match.group(1))
+            break
     
     current_concurrency = None
     current_output_throughput = None
@@ -139,19 +148,19 @@ def parse_benchmark_file(filepath: Path) -> List[BenchmarkResult]:
     is_real_benchmark = False  # distinguish between warmup and actual benchmark
     
     for i, line in enumerate(lines):
-        # Check for benchmark run start
+        # Check for benchmark run start (actual benchmark with request_rate=inf)
         match = re.search(r'Running benchmark with concurrency:\s*(\d+)', line)
         if match:
             current_concurrency = int(match.group(1))
             is_real_benchmark = True
             continue
         
-        # Also capture warmup runs if needed
-        match = re.search(r'Warming up with concurrency\s+(\d+)', line)
-        if match:
-            current_concurrency = int(match.group(1))
+        # Detect warmup by request_rate (warmup uses request_rate=250.0 or similar)
+        # Actual benchmark uses request_rate=inf
+        if 'request_rate=inf' in line:
+            is_real_benchmark = True
+        elif 'request_rate=' in line and 'request_rate=inf' not in line:
             is_real_benchmark = False
-            continue
         
         # Parse metrics
         if 'Output token throughput (tok/s):' in line:
@@ -192,6 +201,8 @@ def parse_benchmark_file(filepath: Path) -> List[BenchmarkResult]:
                     total_throughput=current_total_throughput,
                     median_ttft=current_median_ttft,
                     median_tpot=current_median_tpot,
+                    isl=isl,
+                    osl=osl,
                 ))
             
             # Reset for next block
@@ -402,6 +413,7 @@ def main():
     parser.add_argument('--csv', type=str, help='Also save results to CSV file')
     parser.add_argument('--title', type=str, default='SGLang Benchmark Results',
                         help='Title for the charts')
+    parser.add_argument('--png', type=str, help='Save Pareto chart as PNG image file')
     
     args = parser.parse_args()
     
@@ -452,14 +464,33 @@ def main():
     pareto_fig = create_pareto_chart(df, title=args.title)
     multi_fig = create_multi_metric_chart(df)
     
-    # Save to HTML
+    # Save Pareto chart as PNG if requested
+    if args.png:
+        pareto_fig.write_image(args.png)
+        print(f"\nSaved Pareto chart to: {args.png}")
+    
+    # Save to HTML using JSON (avoid binary encoding issues)
+    import json
+    pareto_json = pareto_fig.to_json()
+    multi_json = multi_fig.to_json()
+    
+    # Extract ISL/OSL info from results
+    isl_osl_info = ""
+    if all_results:
+        isl_values = set(r.isl for r in all_results if r.isl > 0)
+        osl_values = set(r.osl for r in all_results if r.osl > 0)
+        if isl_values or osl_values:
+            isl_str = ", ".join(str(v) for v in sorted(isl_values)) if isl_values else "N/A"
+            osl_str = ", ".join(str(v) for v in sorted(osl_values)) if osl_values else "N/A"
+            isl_osl_info = f"<p><strong>Input Sequence Length (ISL):</strong> {isl_str} &nbsp;&nbsp; <strong>Output Sequence Length (OSL):</strong> {osl_str}</p>"
+    
     with open(args.output, 'w') as f:
         f.write(f"""
 <!DOCTYPE html>
 <html>
 <head>
     <title>{args.title}</title>
-    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <style>
         body {{ font-family: Arial, sans-serif; margin: 20px; }}
         h1 {{ color: #333; }}
@@ -468,23 +499,35 @@ def main():
         th {{ background-color: #4CAF50; color: white; }}
         tr:nth-child(even) {{ background-color: #f2f2f2; }}
         .chart-container {{ margin: 20px 0; }}
+        .info-box {{ background-color: #e8f4f8; padding: 10px 15px; border-radius: 5px; margin-bottom: 15px; }}
     </style>
 </head>
 <body>
     <h1>{args.title}</h1>
     
     <h2>Summary Table</h2>
+    <div class="info-box">
+        {isl_osl_info}
+    </div>
     {df.to_html(index=False, classes='benchmark-table')}
     
     <h2>Pareto Curve</h2>
     <div class="chart-container">
-        {pareto_fig.to_html(full_html=False, include_plotlyjs=False)}
+        <div id="pareto-chart" style="width:1200px;height:800px;"></div>
     </div>
     
     <h2>Multi-Metric Overview</h2>
     <div class="chart-container">
-        {multi_fig.to_html(full_html=False, include_plotlyjs=False)}
+        <div id="multi-chart" style="width:1400px;height:900px;"></div>
     </div>
+    
+    <script>
+        var paretoData = {pareto_json};
+        Plotly.newPlot('pareto-chart', paretoData.data, paretoData.layout);
+        
+        var multiData = {multi_json};
+        Plotly.newPlot('multi-chart', multiData.data, multiData.layout);
+    </script>
 </body>
 </html>
 """)
