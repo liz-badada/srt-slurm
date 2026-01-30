@@ -2,23 +2,23 @@
 # This file provides cluster-specific defaults and settings for srtctl
 
 # Default SLURM settings
-default_account: "jinyanc"
-default_partition: "main"
+default_account: "coreai_comparch_infbench"
+default_partition: "batch"
 default_time_limit: "4:00:00"
 
 # Resource defaults
 gpus_per_node: 8
 
 # SLURM directive compatibility
-use_gpus_per_node_directive: true
-use_segment_sbatch_directive: true
+use_gpus_per_node_directive: false  # EOS cluster doesn't use --gpus-per-node
+use_segment_sbatch_directive: false  # EOS cluster doesn't support --segment
 
 # Path to srtctl repo root (where scripts/templates/ lives)
 srtctl_root: "/home/jinyanc/github/srt-slurm"
 
 # Model path aliases
 model_paths:
-  dsfp8: "/models/dsr1-fp8/"
+  dsfp8: "/lustre/fsw/coreai_comparch_infbench/jinyanc/models/DeepSeek-R1"
 
 # Container aliases
 containers:
