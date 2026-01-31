@@ -1,4 +1,4 @@
-name: "h100-fp8-2p2d-max-dep-mtp"
+name: "h100-fp8-1p2d-max-dep-mtp"
 
 model:
   path: "dsfp8"
@@ -9,8 +9,8 @@ resources:
   gpu_type: "h100"
   prefill_nodes: 2
   prefill_workers: 1
-  decode_nodes: 2
-  decode_workers: 1
+  decode_nodes: 4
+  decode_workers: 2
   gpus_per_node: 8
 
 backend:
@@ -48,17 +48,17 @@ backend:
       disable-radix-cache: true
 
       # Other flags
-      max-running-requests: 1
+      max-running-requests: 2
 
       # Prefill-specific mode
       disaggregation-bootstrap-port: 30001
       disaggregation-mode: "prefill"
       disaggregation-transfer-backend: nixl
 
-      # Memory and token limits
-      mem-fraction-static: 0.3
-      max-prefill-tokens: 8224
-      chunked-prefill-size: 8224
+      # Memory and token limits (balanced for MTP)
+      mem-fraction-static: 0.65
+      max-prefill-tokens: 2048
+      chunked-prefill-size: 2048
 
       # Request handling
       load-balance-method: "round_robin"
@@ -96,10 +96,10 @@ backend:
 
       # Memory and token limits
       mem-fraction-static: 0.9
-      max-running-requests: 4
-      cuda-graph-max-bs: 4
+      max-running-requests: 16
+      cuda-graph-max-bs: 16
 
-      # MTP (Multi-Token Prediction)
+      # MTP
       speculative-algorithm: "EAGLE"
       speculative-num-steps: 2
       speculative-eagle-topk: 1
@@ -107,7 +107,7 @@ backend:
 
 benchmark:
   type: "sa-bench"
-  isl: 8192
+  isl: 1024
   osl: 1024
   concurrencies: "1x2x4x8x16"
   req_rate: "inf"
