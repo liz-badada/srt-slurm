@@ -17,7 +17,7 @@ from typing import List, Optional
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+# from plotly.subplots import make_subplots  # Unused - multi-metric chart disabled
 
 
 @dataclass
@@ -33,6 +33,7 @@ class BenchmarkResult:
     median_tpot: float        # ms
     isl: int = 0              # input sequence length
     osl: int = 0              # output sequence length
+    batch_size: int = 0       # cuda-graph-max-bs
     
     @property
     def otpt_per_user(self) -> float:
@@ -56,15 +57,15 @@ class BenchmarkResult:
         return self.total_throughput / self.gpu_num
 
 
-def extract_config_from_path(filepath: Path) -> tuple[str, str, int]:
+def extract_config_from_path(filepath: Path) -> tuple[str, str, int, int]:
     """
-    Extract config name, framework, and GPU count from file path.
+    Extract config name, framework, GPU count, and batch size from file path.
     
     Expected path patterns:
     - outputs/1234/logs/benchmark.out
     - outputs/1234_configname_xxx/logs/benchmark.out
     
-    Returns: (config_name, framework, gpu_num)
+    Returns: (config_name, framework, gpu_num, batch_size)
     """
     parts = filepath.parts
     
@@ -73,55 +74,87 @@ def extract_config_from_path(filepath: Path) -> tuple[str, str, int]:
     framework = "SGLang"
     gpu_num = 8  # default
     
-    # Try to find config from directory name
-    for part in parts:
-        # Check for job directory pattern like "1234_bs128-agg-tp_..."
-        if re.match(r'^\d+', part):
-            # Extract config name if present
-            match = re.search(r'\d+_([^_]+(?:-[^_]+)*)', part)
-            if match:
-                config = match.group(1)
-        
-        # Check for config patterns in path
-        config_patterns = [
-            r'(bs\d+-\d+p\d+d(?:-(?:tp|dep|mtp))?)',
-            r'(bs\d+-agg-tp(?:-mtp)?)',
-            r'(low-latency-\d+p\d+d)',
-            r'(ctx\d+_gen\d+_[^/]+)',
-        ]
-        for pattern in config_patterns:
-            match = re.search(pattern, part)
-            if match:
-                config = match.group(1)
-                break
-        
-        # Detect framework
-        if 'trtllm' in part.lower() or 'trt-llm' in part.lower():
-            framework = "TRT-LLM"
-        
-        # Try to extract GPU count from path
-        gpu_match = re.search(r'(\d+)gpu', part.lower())
-        if gpu_match:
-            gpu_num = int(gpu_match.group(1))
+    # Try to read config.yaml from parent directory
+    batch_size = 0
+    config_yaml_path = filepath.parent.parent / "config.yaml"
+    if config_yaml_path.exists():
+        try:
+            import yaml
+            with open(config_yaml_path, 'r') as f:
+                config_data = yaml.safe_load(f)
+            if config_data:
+                # Extract config name
+                if 'name' in config_data:
+                    config = config_data['name']
+                # Extract GPU count from resources.prefill_nodes + resources.decode_nodes
+                resources = config_data.get('resources', {})
+                prefill_nodes = resources.get('prefill_nodes', 1)
+                decode_nodes = resources.get('decode_nodes', 1)
+                gpus_per_node = resources.get('gpus_per_node', 8)
+                gpu_num = (prefill_nodes + decode_nodes) * gpus_per_node
+                # Extract batch size from backend.sglang_config.decode
+                backend = config_data.get('backend', {})
+                sglang_config = backend.get('sglang_config', {})
+                decode_config = sglang_config.get('decode', {})
+                batch_size = decode_config.get('cuda-graph-max-bs', 0)
+        except Exception as e:
+            print(f"Warning: Could not parse config.yaml: {e}")
     
-    # Try to infer GPU count from config name
-    # e.g., bs128-1p1d -> 1 prefill + 1 decode = 2 nodes * 8 gpus = 16 gpus
-    pd_match = re.search(r'(\d+)p(\d+)d', config)
-    if pd_match:
-        prefill_nodes = int(pd_match.group(1))
-        decode_nodes = int(pd_match.group(2))
-        gpu_num = (prefill_nodes + decode_nodes) * 8
-    elif 'agg' in config:
-        gpu_num = 8  # aggregated mode typically uses 1 node
+    # Fallback: Try to find config from directory name
+    if config == "unknown":
+        for part in parts:
+            # Check for job directory pattern like "1234_bs128-agg-tp_..."
+            if re.match(r'^\d+', part):
+                # Extract config name if present
+                match = re.search(r'\d+_([^_]+(?:-[^_]+)*)', part)
+                if match:
+                    config = match.group(1)
+            
+            # Check for config patterns in path
+            config_patterns = [
+                r'(bs\d+-\d+p\d+d(?:-(?:tp|dep|mtp))?)',
+                r'(bs\d+-agg-tp(?:-mtp)?)',
+                r'(low-latency-\d+p\d+d)',
+                r'(ctx\d+_gen\d+_[^/]+)',
+                r'(h100-[^/]+)',
+            ]
+            for pattern in config_patterns:
+                match = re.search(pattern, part)
+                if match:
+                    config = match.group(1)
+                    break
+            
+            # Detect framework
+            if 'trtllm' in part.lower() or 'trt-llm' in part.lower():
+                framework = "TRT-LLM"
+            
+            # Try to extract GPU count from path
+            gpu_match = re.search(r'(\d+)gpu', part.lower())
+            if gpu_match:
+                gpu_num = int(gpu_match.group(1))
     
-    return config, framework, gpu_num
+    # Only use fallback GPU count inference if config.yaml didn't provide it
+    # (i.e., gpu_num is still at default value of 8)
+    if gpu_num == 8 and config != "unknown":
+        # Try to infer GPU count from config name as fallback
+        # Note: This is approximate and may be wrong for some configurations
+        pd_match = re.search(r'(\d+)p(\d+)d', config)
+        if pd_match:
+            # Assume each worker uses 2 nodes (for TP=16 on 8-GPU nodes)
+            prefill_workers = int(pd_match.group(1))
+            decode_workers = int(pd_match.group(2))
+            gpu_num = (prefill_workers + decode_workers) * 2 * 8  # 2 nodes per worker
+        elif 'agg' in config:
+            gpu_num = 8  # aggregated mode typically uses 1 node
+    
+    return config, framework, gpu_num, batch_size
 
 
 def parse_benchmark_file(filepath: Path) -> List[BenchmarkResult]:
     """Parse a benchmark.out file and extract all benchmark results."""
     results = []
     
-    config, framework, gpu_num = extract_config_from_path(filepath)
+    config, framework, gpu_num, batch_size = extract_config_from_path(filepath)
     
     with open(filepath, 'r') as f:
         content = f.read()
@@ -203,6 +236,7 @@ def parse_benchmark_file(filepath: Path) -> List[BenchmarkResult]:
                     median_tpot=current_median_tpot,
                     isl=isl,
                     osl=osl,
+                    batch_size=batch_size,
                 ))
             
             # Reset for next block
@@ -210,6 +244,7 @@ def parse_benchmark_file(filepath: Path) -> List[BenchmarkResult]:
             current_total_throughput = None
             current_median_ttft = None
             current_median_tpot = None
+            is_real_benchmark = False  # Reset to avoid carrying state to next block
     
     return results
 
@@ -233,6 +268,8 @@ def create_summary_table(results: List[BenchmarkResult]) -> pd.DataFrame:
     for r in results:
         data.append({
             'Framework': r.framework,
+            'isl': r.isl,
+            'osl': r.osl,
             'Config': r.config,
             'GPU num': r.gpu_num,
             'concurrency': r.concurrency,
@@ -249,12 +286,19 @@ def create_summary_table(results: List[BenchmarkResult]) -> pd.DataFrame:
     
     # Sort by framework, config, concurrency
     if not df.empty:
-        df = df.sort_values(['Framework', 'Config', 'concurrency'])
+        df = df.sort_values(['Framework', 'isl', 'osl', 'Config', 'concurrency'])
     
     return df
 
 
-def create_pareto_chart(df: pd.DataFrame, title: str = "SGLang Benchmark Results") -> go.Figure:
+def format_seq_len(length: int) -> str:
+    """Format sequence length: 1024 -> 1k, 8192 -> 8k, etc."""
+    if length >= 1000:
+        return f"{length // 1000}k"
+    return str(length)
+
+
+def create_pareto_chart(df: pd.DataFrame, title: str = "SGLang DSR1 FP8 H100 Disaggregated") -> go.Figure:
     """
     Create a Pareto curve chart.
     
@@ -264,41 +308,188 @@ def create_pareto_chart(df: pd.DataFrame, title: str = "SGLang Benchmark Results
     if df.empty:
         return go.Figure()
     
-    # Create figure
-    fig = px.scatter(
-        df,
-        x='otpt/user',
-        y='total tps/gpu',
-        color='Config',
-        symbol='Framework',
-        hover_data=['concurrency', 'GPU num', 'Output throughput', 'median TTFT', 'median TPOT'],
-        title=title,
-        labels={
-            'otpt/user': 'Output Tokens/s per User',
-            'total tps/gpu': 'Total Tokens/s per GPU',
-        }
+    # Create legend names with ISL/OSL info (e.g., "config (1k1k)")
+    df = df.copy()
+    
+    # Extract PD config (e.g., "1p2d", "2p4d") and variant (e.g., "mtp", "")
+    def extract_pd_config(config):
+        """Extract PD configuration like 1p2d, 2p4d from config name."""
+        match = re.search(r'(\d+p\d+d)', config)
+        return match.group(1) if match else 'unknown'
+    
+    def extract_variant(config):
+        """Extract variant like mtp from config name."""
+        if '-mtp' in config:
+            return 'mtp'
+        elif '-dep' in config:
+            return 'dep'
+        return 'base'
+    
+    df['pd_config'] = df['Config'].apply(extract_pd_config)
+    df['variant'] = df['Config'].apply(extract_variant)
+    df['seq_len'] = df.apply(
+        lambda r: f"{format_seq_len(r['isl'])}{format_seq_len(r['osl'])}" if r['isl'] > 0 else '',
+        axis=1
+    )
+    # Create legend with seq_len
+    def create_legend(r):
+        parts = [r['Config']]
+        if r['seq_len']:
+            parts.append(f"({r['seq_len']})")
+        return ' '.join(parts)
+    
+    df['Legend'] = df.apply(create_legend, axis=1)
+    
+    # Define marker symbols by PD config
+    pd_symbols = {
+        '1p1d': 'circle',
+        '1p2d': 'square',
+        '2p4d': 'diamond',
+        '1p4d': 'triangle-up',
+        '2p2d': 'cross',
+        'unknown': 'star',
+    }
+    
+    # Define line styles by PD config
+    pd_line_styles = {
+        '1p1d': 'solid',
+        '1p2d': 'dash',
+        '2p4d': 'dot',
+        '1p4d': 'dashdot',
+        '2p2d': 'longdash',
+    }
+    
+    # NVIDIA color scheme
+    # MTP variants: Green series (NVIDIA Green)
+    # Base variants: Gray/Black series
+    mtp_colors = {
+        '1k1k': '#76B900',  # NVIDIA Green
+        '8k1k': '#8BC34A',  # Light Green
+        '1k8k': '#4CAF50',  # Green
+        '8k8k': '#2E7D32',  # Dark Green
+        '4k4k': '#9CCC65',  # Yellow Green
+        '2k2k': '#558B2F',  # Olive Green
+    }
+    
+    base_colors = {
+        '1k1k': '#1E90FF',  # Dodger Blue
+        '8k1k': '#4169E1',  # Royal Blue
+        '1k8k': '#6495ED',  # Cornflower Blue
+        '8k8k': '#0000CD',  # Medium Blue
+        '4k4k': '#00BFFF',  # Deep Sky Blue
+        '2k2k': '#4682B4',  # Steel Blue
+    }
+    
+    # Default fallback colors
+    default_mtp_color = '#76B900'  # NVIDIA Green
+    default_base_color = '#1E90FF'  # Dodger Blue
+    
+    # Build figure manually for better control
+    fig = go.Figure()
+    
+    legends_added = set()
+    legend_idx = 0
+    
+    for legend in df['Legend'].unique():
+        legend_df = df[df['Legend'] == legend].sort_values('concurrency')
+        if legend_df.empty:
+            continue
+        
+        # Get attributes for this legend
+        pd_config = legend_df['pd_config'].iloc[0]
+        variant = legend_df['variant'].iloc[0]
+        seq_len = legend_df['seq_len'].iloc[0]
+        
+        # Determine marker symbol based on PD config
+        symbol = pd_symbols.get(pd_config, 'circle')
+        
+        # Determine line style based on PD config
+        line_style = pd_line_styles.get(pd_config, 'solid')
+        
+        # Determine color based on variant (MTP vs base) and sequence length
+        # MTP: Green series (NVIDIA Green)
+        # Base: Gray/Black series
+        if variant == 'mtp':
+            color = mtp_colors.get(seq_len, default_mtp_color)
+        else:
+            color = base_colors.get(seq_len, default_base_color)
+        
+        # Add scatter points with text labels showing (concurrency, TTFT)
+        # Format TTFT: show in seconds if >= 1000ms, otherwise in ms
+        def format_ttft(ttft_ms):
+            if ttft_ms >= 1000:
+                return f"{ttft_ms/1000:.1f}s"
+            return f"{ttft_ms:.0f}ms"
+        
+        text_labels = [f"({int(row['concurrency'])}, {format_ttft(row['median TTFT'])})" 
+                       for _, row in legend_df.iterrows()]
+        
+        # Combine markers, lines and text in one trace so legend shows both marker and line style
+        fig.add_trace(go.Scatter(
+            x=legend_df['otpt/user'],
+            y=legend_df['otpt/gpu'],
+            mode='lines+markers+text',
+            name=legend,
+            marker=dict(
+                symbol=symbol,
+                size=12,
+                color=color,
+                line=dict(width=1, color=color),
+            ),
+            line=dict(width=3, color=color, dash=line_style),
+            text=text_labels,
+            textposition='top center',
+            textfont=dict(size=9, color=color),
+            hovertemplate=(
+                f"<b>{legend}</b><br>"
+                "otpt/user: %{x:.1f}<br>"
+                "otpt/gpu: %{y:.1f}<br>"
+                "<extra></extra>"
+            ),
+            customdata=legend_df[['concurrency', 'GPU num', 'Output throughput', 'median TTFT', 'median TPOT']].values,
+            showlegend=True,
+        ))
+        
+        legend_idx += 1
+    
+    # Add annotation explaining the point labels (top right corner)
+    fig.add_annotation(
+        x=0.99,
+        y=0.99,
+        xref='paper',
+        yref='paper',
+        text="Label: (concurrency, median TTFT)",
+        showarrow=False,
+        font=dict(size=11, color="#555555"),
+        bgcolor='rgba(255, 255, 255, 0.9)',
+        bordercolor='rgba(0, 0, 0, 0.3)',
+        borderwidth=1,
+        borderpad=4,
+        xanchor='right',
+        yanchor='top',
     )
     
-    # Add lines connecting points for each config
-    configs = df['Config'].unique()
-    for config in configs:
-        config_df = df[df['Config'] == config].sort_values('concurrency')
-        if len(config_df) > 1:
-            fig.add_trace(go.Scatter(
-                x=config_df['otpt/user'],
-                y=config_df['total tps/gpu'],
-                mode='lines',
-                name=f'{config} (line)',
-                line=dict(width=1),
-                showlegend=False,
-                hoverinfo='skip'
-            ))
-    
-    # Update layout
+    # Update layout with centered title
     fig.update_layout(
-        xaxis_title="out tps / user",
-        yaxis_title="tps/r / gpu",
-        legend_title="Config",
+        title={
+            'text': title,
+            'x': 0.5,
+            'xanchor': 'center',
+            'yanchor': 'top',
+            'font': {'size': 20}
+        },
+        xaxis_title="Output Tokens/s per User",
+        yaxis_title="Output Tokens/s per GPU",
+        legend=dict(
+            x=0.01,
+            y=0.01,
+            xanchor='left',
+            yanchor='bottom',
+            bgcolor='rgba(255, 255, 255, 0.9)',
+            bordercolor='rgba(0, 0, 0, 0.3)',
+            borderwidth=1,
+            itemwidth=50,  # Make legend line longer
+        ),
         hovermode='closest',
         width=1200,
         height=800,
@@ -307,103 +498,6 @@ def create_pareto_chart(df: pd.DataFrame, title: str = "SGLang Benchmark Results
     return fig
 
 
-def create_multi_metric_chart(df: pd.DataFrame) -> go.Figure:
-    """Create a multi-panel chart with different metrics."""
-    if df.empty:
-        return go.Figure()
-    
-    fig = make_subplots(
-        rows=2, cols=2,
-        subplot_titles=(
-            'Output Throughput vs Concurrency',
-            'Median TTFT vs Concurrency',
-            'Median TPOT vs Concurrency',
-            'Pareto: otpt/user vs tps/gpu'
-        )
-    )
-    
-    configs = df['Config'].unique()
-    colors = px.colors.qualitative.Set1
-    
-    for i, config in enumerate(configs):
-        config_df = df[df['Config'] == config].sort_values('concurrency')
-        color = colors[i % len(colors)]
-        
-        # Output throughput vs concurrency
-        fig.add_trace(
-            go.Scatter(
-                x=config_df['concurrency'],
-                y=config_df['Output throughput'],
-                mode='lines+markers',
-                name=config,
-                line=dict(color=color),
-                legendgroup=config,
-            ),
-            row=1, col=1
-        )
-        
-        # Median TTFT vs concurrency
-        fig.add_trace(
-            go.Scatter(
-                x=config_df['concurrency'],
-                y=config_df['median TTFT'],
-                mode='lines+markers',
-                name=config,
-                line=dict(color=color),
-                legendgroup=config,
-                showlegend=False,
-            ),
-            row=1, col=2
-        )
-        
-        # Median TPOT vs concurrency
-        fig.add_trace(
-            go.Scatter(
-                x=config_df['concurrency'],
-                y=config_df['median TPOT'],
-                mode='lines+markers',
-                name=config,
-                line=dict(color=color),
-                legendgroup=config,
-                showlegend=False,
-            ),
-            row=2, col=1
-        )
-        
-        # Pareto curve
-        fig.add_trace(
-            go.Scatter(
-                x=config_df['otpt/user'],
-                y=config_df['total tps/gpu'],
-                mode='lines+markers',
-                name=config,
-                line=dict(color=color),
-                legendgroup=config,
-                showlegend=False,
-            ),
-            row=2, col=2
-        )
-    
-    fig.update_layout(
-        height=900,
-        width=1400,
-        title_text="Benchmark Results Overview",
-        showlegend=True,
-    )
-    
-    # Update axis labels
-    fig.update_xaxes(title_text="Concurrency", row=1, col=1)
-    fig.update_xaxes(title_text="Concurrency", row=1, col=2)
-    fig.update_xaxes(title_text="Concurrency", row=2, col=1)
-    fig.update_xaxes(title_text="out tps / user", row=2, col=2)
-    
-    fig.update_yaxes(title_text="Output tok/s", row=1, col=1)
-    fig.update_yaxes(title_text="TTFT (ms)", row=1, col=2)
-    fig.update_yaxes(title_text="TPOT (ms)", row=2, col=1)
-    fig.update_yaxes(title_text="tps/r / gpu", row=2, col=2)
-    
-    return fig
-
 
 def main():
     parser = argparse.ArgumentParser(description='Parse benchmark.out files and generate reports')
@@ -411,9 +505,10 @@ def main():
     parser.add_argument('--output', '-o', type=str, default='benchmark_results.html',
                         help='Output HTML file path')
     parser.add_argument('--csv', type=str, help='Also save results to CSV file')
-    parser.add_argument('--title', type=str, default='SGLang Benchmark Results',
+    parser.add_argument('--title', type=str, default='SGLang DSR1 FP8 H100 Disaggregated',
                         help='Title for the charts')
     parser.add_argument('--png', type=str, help='Save Pareto chart as PNG image file')
+    parser.add_argument('--svg', type=str, help='Save Pareto chart as SVG image file (vector, higher quality)')
     
     args = parser.parse_args()
     
@@ -462,17 +557,20 @@ def main():
     
     # Create charts
     pareto_fig = create_pareto_chart(df, title=args.title)
-    multi_fig = create_multi_metric_chart(df)
     
     # Save Pareto chart as PNG if requested
     if args.png:
         pareto_fig.write_image(args.png)
-        print(f"\nSaved Pareto chart to: {args.png}")
+        print(f"\nSaved Pareto chart (PNG) to: {args.png}")
+    
+    # Save Pareto chart as SVG if requested
+    if args.svg:
+        pareto_fig.write_image(args.svg, format='svg')
+        print(f"\nSaved Pareto chart (SVG) to: {args.svg}")
     
     # Save to HTML using JSON (avoid binary encoding issues)
     import json
     pareto_json = pareto_fig.to_json()
-    multi_json = multi_fig.to_json()
     
     # Extract ISL/OSL info from results
     isl_osl_info = ""
@@ -494,7 +592,7 @@ def main():
     <style>
         body {{ font-family: Arial, sans-serif; margin: 20px; }}
         h1 {{ color: #333; }}
-        table {{ border-collapse: collapse; margin: 20px 0; }}
+        table {{ border-collapse: collapse; margin: 20px 0; width: 100%; }}
         th, td {{ border: 1px solid #ddd; padding: 8px; text-align: right; }}
         th {{ background-color: #4CAF50; color: white; }}
         tr:nth-child(even) {{ background-color: #f2f2f2; }}
@@ -511,22 +609,14 @@ def main():
     </div>
     {df.to_html(index=False, classes='benchmark-table')}
     
-    <h2>Pareto Curve</h2>
+    <h2>Pareto Curve (Output tps/user vs Total tps/gpu)</h2>
     <div class="chart-container">
         <div id="pareto-chart" style="width:1200px;height:800px;"></div>
-    </div>
-    
-    <h2>Multi-Metric Overview</h2>
-    <div class="chart-container">
-        <div id="multi-chart" style="width:1400px;height:900px;"></div>
     </div>
     
     <script>
         var paretoData = {pareto_json};
         Plotly.newPlot('pareto-chart', paretoData.data, paretoData.layout);
-        
-        var multiData = {multi_json};
-        Plotly.newPlot('multi-chart', multiData.data, multiData.layout);
     </script>
 </body>
 </html>
