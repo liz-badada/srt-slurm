@@ -1,25 +1,29 @@
 # SRT SLURM Configuration
 # This file provides cluster-specific defaults and settings for srtctl
 
-# Default SLURM settings
-default_account: "coreai_comparch_infbench"
-default_partition: "batch"
+# Default SLURM settings (H100 OCI Cluster)
+default_account: "customer"
+default_partition: "hpc-gpu-1"
 default_time_limit: "4:00:00"
 
 # Resource defaults
 gpus_per_node: 8
 
 # SLURM directive compatibility
-use_gpus_per_node_directive: false  # EOS cluster doesn't use --gpus-per-node
-use_segment_sbatch_directive: false  # EOS cluster doesn't support --segment
+use_gpus_per_node_directive: true  # OCI cluster needs --gpus-per-node for container GPU access
+# use_segment_sbatch_directive: false  # OCI cluster doesn't support --segment
 
 # Path to srtctl repo root (where scripts/templates/ lives)
-srtctl_root: "/home/jinyanc/github/srt-slurm"
+srtctl_root: "/mnt/nfs/jinyanc/github/srt-slurm"
 
 # Model path aliases
+# Note: /mnt/numa0 and /mnt/numa1 are local raid disks on worker nodes (28TiB each)
 model_paths:
-  dsfp8: "/lustre/fsw/coreai_comparch_infbench/jinyanc/models/DeepSeek-R1"
+  dsfp8: "/mnt/numa1/shared/models/dsr1-fp8"
 
 # Container aliases
+# Note: Run setup_container.sh first to import containers to local numa0 on each node:
+#   srun --nodes=20 --ntasks-per-node=1 /mnt/nfs/jinyanc/script/setup_container.sh lmsysorg/sglang:v0.5.8-cu130-runtime
+# Using local path for faster loading (all 20 nodes have this imported)
 containers:
-  lmsysorg/sglang:v0.5.8-cu130-runtime: "/home/jinyanc/github/srt-slurm/lmsysorg+sglang+v0.5.8-cu130-runtime.sqsh"
+  lmsysorg/sglang:v0.5.8-cu130-runtime: "/mnt/numa0/enroot/tmp/lmsysorg+sglang+v0.5.8-cu130-runtime.sqsh"

@@ -1,7 +1,7 @@
 #!/bin/bash
 set -ex
 
-cd $HOME/github/srt-slurm
+cd /mnt/nfs/jinyanc/github/srt-slurm
 
 # Try pip install with --break-system-packages, fallback without it
 pip install -e . --break-system-packages 2>/dev/null || pip install -e . --user

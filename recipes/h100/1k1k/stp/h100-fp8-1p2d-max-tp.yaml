@@ -17,12 +17,12 @@ backend:
 
   # Prefill-specific environment variables
   prefill_environment:
-    SGLANG_DG_CACHE_DIR: "/configs/deepgemm_cache"
+    SGLANG_DG_CACHE_DIR: "/configs/deepgemm_cache-{node_id}"
     FLASHINFER_WORKSPACE_BASE: "/configs/"
 
   # Decode-specific environment variables
   decode_environment:
-    SGLANG_DG_CACHE_DIR: "/configs/deepgemm_cache"
+    SGLANG_DG_CACHE_DIR: "/configs/deepgemm_cache-{node_id}"
     FLASHINFER_WORKSPACE_BASE: "/configs/"
 
   sglang_config:
@@ -61,6 +61,9 @@ backend:
       # Request handling
       load-balance-method: "round_robin"
 
+      # Watchdog timeout (allow time for DeepGEMM JIT compilation)
+      watchdog-timeout: 900
+
     decode:
       # Model configuration
       served-model-name: "deepseek-ai/DeepSeek-R1"
@@ -90,6 +93,9 @@ backend:
       mem-fraction-static: 0.9
       max-running-requests: 8
       cuda-graph-max-bs: 8
+
+      # Watchdog timeout (allow time for DeepGEMM JIT compilation)
+      watchdog-timeout: 900
 
 benchmark:
   type: "sa-bench"
