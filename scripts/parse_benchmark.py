@@ -331,9 +331,28 @@ def create_pareto_chart(df: pd.DataFrame, title: str = "SGLang DSR1 FP8 H100 Dis
         lambda r: f"{format_seq_len(r['isl'])}{format_seq_len(r['osl'])}" if r['isl'] > 0 else '',
         axis=1
     )
-    # Create legend with seq_len
+    # Create legend with GPU count and seq_len
+    # e.g., "h100-fp8-1p2d-max-dep (1k1k)" -> "h100-fp8-1p2d-48gpus-max-dep (1k1k)"
     def create_legend(r):
-        parts = [r['Config']]
+        config = r['Config']
+        gpu_num = int(r['GPU num'])
+        
+        # Insert GPU count after the XpYd pattern
+        # e.g., "h100-fp8-1p2d-max-dep" -> "h100-fp8-1p2d-48gpus-max-dep"
+        pd_match = re.search(r'(\d+p\d+d)', config)
+        if pd_match:
+            pd_part = pd_match.group(1)
+            # Insert GPU count right after the pd pattern
+            config_with_gpus = config.replace(
+                pd_part, 
+                f"{pd_part}-{gpu_num}gpus",
+                1  # Only replace first occurrence
+            )
+        else:
+            # Fallback: append GPU count at the end of config name
+            config_with_gpus = f"{config}-{gpu_num}gpus"
+        
+        parts = [config_with_gpus]
         if r['seq_len']:
             parts.append(f"({r['seq_len']})")
         return ' '.join(parts)
@@ -350,44 +369,40 @@ def create_pareto_chart(df: pd.DataFrame, title: str = "SGLang DSR1 FP8 H100 Dis
         'unknown': 'star',
     }
     
-    # Define line styles by PD config
-    pd_line_styles = {
-        '1p1d': 'solid',
-        '1p2d': 'dash',
-        '2p4d': 'dot',
-        '1p4d': 'dashdot',
-        '2p2d': 'longdash',
+    # Define line styles by variant: MTP = solid, non-MTP = dash
+    variant_line_styles = {
+        'mtp': 'solid',
+        'dep': 'dash',
+        'base': 'dash',
     }
     
-    # NVIDIA color scheme
-    # MTP variants: Green series (NVIDIA Green)
-    # Base variants: Gray/Black series
-    mtp_colors = {
-        '1k1k': '#76B900',  # NVIDIA Green
-        '8k1k': '#8BC34A',  # Light Green
-        '1k8k': '#4CAF50',  # Green
-        '8k8k': '#2E7D32',  # Dark Green
-        '4k4k': '#9CCC65',  # Yellow Green
-        '2k2k': '#558B2F',  # Olive Green
-    }
-    
-    base_colors = {
-        '1k1k': '#1E90FF',  # Dodger Blue
-        '8k1k': '#4169E1',  # Royal Blue
-        '1k8k': '#6495ED',  # Cornflower Blue
-        '8k8k': '#0000CD',  # Medium Blue
-        '4k4k': '#00BFFF',  # Deep Sky Blue
-        '2k2k': '#4682B4',  # Steel Blue
-    }
-    
-    # Default fallback colors
-    default_mtp_color = '#76B900'  # NVIDIA Green
-    default_base_color = '#1E90FF'  # Dodger Blue
+    # Colorful palette for different configs (easy to distinguish)
+    colorful_palette = [
+        '#E6194B',  # Red
+        '#3CB44B',  # Green
+        '#4363D8',  # Blue
+        '#F58231',  # Orange
+        '#911EB4',  # Purple
+        '#42D4F4',  # Cyan
+        '#F032E6',  # Magenta
+        '#BFEF45',  # Lime
+        '#FABEBE',  # Pink
+        '#469990',  # Teal
+        '#E6BEFF',  # Lavender
+        '#9A6324',  # Brown
+        '#FFFAC8',  # Beige
+        '#800000',  # Maroon
+        '#AAFFC3',  # Mint
+        '#808000',  # Olive
+        '#FFD8B1',  # Apricot
+        '#000075',  # Navy
+        '#A9A9A9',  # Gray
+        '#FFE119',  # Yellow
+    ]
     
     # Build figure manually for better control
     fig = go.Figure()
     
-    legends_added = set()
     legend_idx = 0
     
     for legend in df['Legend'].unique():
@@ -398,21 +413,15 @@ def create_pareto_chart(df: pd.DataFrame, title: str = "SGLang DSR1 FP8 H100 Dis
         # Get attributes for this legend
         pd_config = legend_df['pd_config'].iloc[0]
         variant = legend_df['variant'].iloc[0]
-        seq_len = legend_df['seq_len'].iloc[0]
         
         # Determine marker symbol based on PD config
         symbol = pd_symbols.get(pd_config, 'circle')
         
-        # Determine line style based on PD config
-        line_style = pd_line_styles.get(pd_config, 'solid')
+        # Determine line style based on variant: MTP = solid, non-MTP = dash
+        line_style = variant_line_styles.get(variant, 'dash')
         
-        # Determine color based on variant (MTP vs base) and sequence length
-        # MTP: Green series (NVIDIA Green)
-        # Base: Gray/Black series
-        if variant == 'mtp':
-            color = mtp_colors.get(seq_len, default_mtp_color)
-        else:
-            color = base_colors.get(seq_len, default_base_color)
+        # Determine color from colorful palette (each legend gets a unique color)
+        color = colorful_palette[legend_idx % len(colorful_palette)]
         
         # Add scatter points with text labels showing (concurrency, TTFT)
         # Format TTFT: show in seconds if >= 1000ms, otherwise in ms
@@ -452,23 +461,6 @@ def create_pareto_chart(df: pd.DataFrame, title: str = "SGLang DSR1 FP8 H100 Dis
         
         legend_idx += 1
     
-    # Add annotation explaining the point labels (top right corner)
-    fig.add_annotation(
-        x=0.99,
-        y=0.99,
-        xref='paper',
-        yref='paper',
-        text="Label: (concurrency, median TTFT)",
-        showarrow=False,
-        font=dict(size=11, color="#555555"),
-        bgcolor='rgba(255, 255, 255, 0.9)',
-        bordercolor='rgba(0, 0, 0, 0.3)',
-        borderwidth=1,
-        borderpad=4,
-        xanchor='right',
-        yanchor='top',
-    )
-    
     # Update layout with centered title
     fig.update_layout(
         title={
@@ -481,10 +473,14 @@ def create_pareto_chart(df: pd.DataFrame, title: str = "SGLang DSR1 FP8 H100 Dis
         xaxis_title="Output Tokens/s per User",
         yaxis_title="Output Tokens/s per GPU",
         legend=dict(
-            x=0.01,
-            y=0.01,
-            xanchor='left',
-            yanchor='bottom',
+            title=dict(
+                text="Label: (concurrency, median TTFT)",
+                font=dict(size=11, color="#555555"),
+            ),
+            x=0.99,
+            y=0.99,
+            xanchor='right',
+            yanchor='top',
             bgcolor='rgba(255, 255, 255, 0.9)',
             bordercolor='rgba(0, 0, 0, 0.3)',
             borderwidth=1,

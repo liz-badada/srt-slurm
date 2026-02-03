@@ -1,4 +1,4 @@
-name: "h100-fp8-1p2d-max-tp"
+name: "h100-fp8-1p2d-max-dep"
 
 model:
   path: "dsfp8"
@@ -36,7 +36,7 @@ backend:
       # Parallelism
       tp-size: 16
       dp-size: 1
-      ep-size: 1 
+      ep-size: 1
       enable-dp-attention: false
 
       # KV cache and attention
@@ -45,8 +45,8 @@ backend:
       # Radix cache disabled
       disable-radix-cache: true
 
-      # Other flags
-      max-running-requests: 2
+      # Prefill capacity
+      max-running-requests: 4
 
       # Prefill-specific mode
       disaggregation-bootstrap-port: 30001
@@ -73,9 +73,9 @@ backend:
 
       # Parallelism
       tp-size: 16
-      dp-size: 1
-      ep-size: 1
-      enable-dp-attention: false
+      dp-size: 16
+      ep-size: 16
+      enable-dp-attention: true
 
       # KV cache and attention
       attention-backend: "flashinfer"
