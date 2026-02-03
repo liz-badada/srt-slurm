@@ -298,7 +298,7 @@ def format_seq_len(length: int) -> str:
     return str(length)
 
 
-def create_pareto_chart(df: pd.DataFrame, title: str = "SGLang DSR1 FP8 H100 Disaggregated") -> go.Figure:
+def create_pareto_chart(df: pd.DataFrame, title: str = "SGLang DSR1 FP8 H100 Disaggregated 1k1k/1k8k/8k1k (MTP vs non-MTP)") -> go.Figure:
     """
     Create a Pareto curve chart.
     
@@ -524,7 +524,7 @@ def main():
     parser.add_argument('--output', '-o', type=str, default='benchmark_results.html',
                         help='Output HTML file path')
     parser.add_argument('--csv', type=str, help='Also save results to CSV file')
-    parser.add_argument('--title', type=str, default='SGLang DSR1 FP8 H100 Disaggregated',
+    parser.add_argument('--title', type=str, default='SGLang DSR1 FP8 H100 Disaggregated 1k1k/1k8k/8k1k (MTP vs non-MTP)',
                         help='Title for the charts')
     parser.add_argument('--png', type=str, help='Save Pareto chart as PNG image file')
     parser.add_argument('--svg', type=str, help='Save Pareto chart as SVG image file (vector, higher quality)')
