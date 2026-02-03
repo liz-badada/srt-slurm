@@ -359,6 +359,20 @@ def create_pareto_chart(df: pd.DataFrame, title: str = "SGLang DSR1 FP8 H100 Dis
     
     df['Legend'] = df.apply(create_legend, axis=1)
     
+    # Extract parallelism config (e.g., "1p1d-max-dep" from "h100-fp8-1p1d-max-dep-mtp")
+    # This is used for color grouping: same parallelism + same ISL/OSL = same color
+    def extract_parallelism_config(config):
+        """Extract parallelism config without MTP suffix for color grouping."""
+        # Remove common prefixes like "h100-fp8-"
+        config_clean = re.sub(r'^h\d+-fp\d+-', '', config)
+        # Remove -mtp suffix if present
+        config_clean = re.sub(r'-mtp$', '', config_clean)
+        return config_clean
+    
+    df['parallelism_config'] = df['Config'].apply(extract_parallelism_config)
+    # Color key: parallelism_config + seq_len (same parallelism + same ISL/OSL = same color)
+    df['color_key'] = df['parallelism_config'] + '_' + df['seq_len']
+    
     # Define marker symbols by PD config
     pd_symbols = {
         '1p1d': 'circle',
@@ -367,13 +381,6 @@ def create_pareto_chart(df: pd.DataFrame, title: str = "SGLang DSR1 FP8 H100 Dis
         '1p4d': 'triangle-up',
         '2p2d': 'cross',
         'unknown': 'star',
-    }
-    
-    # Define line styles by variant: MTP = solid, non-MTP = dash
-    variant_line_styles = {
-        'mtp': 'solid',
-        'dep': 'dash',
-        'base': 'dash',
     }
     
     # Colorful palette for different configs (easy to distinguish)
@@ -386,24 +393,21 @@ def create_pareto_chart(df: pd.DataFrame, title: str = "SGLang DSR1 FP8 H100 Dis
         '#42D4F4',  # Cyan
         '#F032E6',  # Magenta
         '#BFEF45',  # Lime
-        '#FABEBE',  # Pink
         '#469990',  # Teal
-        '#E6BEFF',  # Lavender
         '#9A6324',  # Brown
-        '#FFFAC8',  # Beige
         '#800000',  # Maroon
-        '#AAFFC3',  # Mint
-        '#808000',  # Olive
-        '#FFD8B1',  # Apricot
         '#000075',  # Navy
-        '#A9A9A9',  # Gray
+        '#808000',  # Olive
         '#FFE119',  # Yellow
     ]
     
+    # Build color mapping: same parallelism + same ISL/OSL = same color
+    unique_color_keys = df['color_key'].unique()
+    color_map = {key: colorful_palette[i % len(colorful_palette)] 
+                 for i, key in enumerate(unique_color_keys)}
+    
     # Build figure manually for better control
     fig = go.Figure()
-    
-    legend_idx = 0
     
     for legend in df['Legend'].unique():
         legend_df = df[df['Legend'] == legend].sort_values('concurrency')
@@ -413,15 +417,16 @@ def create_pareto_chart(df: pd.DataFrame, title: str = "SGLang DSR1 FP8 H100 Dis
         # Get attributes for this legend
         pd_config = legend_df['pd_config'].iloc[0]
         variant = legend_df['variant'].iloc[0]
+        color_key = legend_df['color_key'].iloc[0]
         
         # Determine marker symbol based on PD config
         symbol = pd_symbols.get(pd_config, 'circle')
         
-        # Determine line style based on variant: MTP = solid, non-MTP = dash
-        line_style = variant_line_styles.get(variant, 'dash')
+        # Determine line style: MTP = solid, non-MTP = dash
+        line_style = 'solid' if variant == 'mtp' else 'dash'
         
-        # Determine color from colorful palette (each legend gets a unique color)
-        color = colorful_palette[legend_idx % len(colorful_palette)]
+        # Determine color from color_map (same parallelism + same ISL/OSL = same color)
+        color = color_map.get(color_key, '#888888')
         
         # Add scatter points with text labels showing (concurrency, TTFT)
         # Format TTFT: show in seconds if >= 1000ms, otherwise in ms
@@ -458,8 +463,6 @@ def create_pareto_chart(df: pd.DataFrame, title: str = "SGLang DSR1 FP8 H100 Dis
             customdata=legend_df[['concurrency', 'GPU num', 'Output throughput', 'median TTFT', 'median TPOT']].values,
             showlegend=True,
         ))
-        
-        legend_idx += 1
     
     # Update layout with centered title
     fig.update_layout(
@@ -472,6 +475,26 @@ def create_pareto_chart(df: pd.DataFrame, title: str = "SGLang DSR1 FP8 H100 Dis
         },
         xaxis_title="Output Tokens/s per User",
         yaxis_title="Output Tokens/s per GPU",
+        xaxis=dict(
+            dtick=5,  # Finer x-axis tick intervals (every 5 units)
+            gridcolor='rgba(128, 128, 128, 0.2)',
+            gridwidth=1,
+            minor=dict(
+                dtick=2.5,  # Minor ticks every 2.5 units
+                showgrid=True,
+                gridcolor='rgba(128, 128, 128, 0.1)',
+            ),
+        ),
+        yaxis=dict(
+            dtick=5,  # Finer y-axis tick intervals (every 5 units)
+            gridcolor='rgba(128, 128, 128, 0.2)',
+            gridwidth=1,
+            minor=dict(
+                dtick=2.5,  # Minor ticks every 2.5 units
+                showgrid=True,
+                gridcolor='rgba(128, 128, 128, 0.1)',
+            ),
+        ),
         legend=dict(
             title=dict(
                 text="Label: (concurrency, median TTFT)",
@@ -487,7 +510,7 @@ def create_pareto_chart(df: pd.DataFrame, title: str = "SGLang DSR1 FP8 H100 Dis
             itemwidth=50,  # Make legend line longer
         ),
         hovermode='closest',
-        width=1200,
+        width=1400,  # Wider chart to spread out data points
         height=800,
     )
     
@@ -607,7 +630,7 @@ def main():
     
     <h2>Pareto Curve (Output tps/user vs Total tps/gpu)</h2>
     <div class="chart-container">
-        <div id="pareto-chart" style="width:1200px;height:800px;"></div>
+        <div id="pareto-chart" style="width:1400px;height:800px;"></div>
     </div>
     
     <script>
