@@ -518,16 +518,47 @@ def create_pareto_chart(df: pd.DataFrame, title: str = "SGLang DSR1 FP8 H100 Dis
 
 
 
+def create_pareto_chart_by_seq_len(df: pd.DataFrame, isl: int, osl: int, base_title: str = "SGLang DSR1 FP8 H100 Disaggregated") -> go.Figure:
+    """
+    Create a Pareto curve chart filtered by specific ISL/OSL.
+    
+    Args:
+        df: Full DataFrame with all benchmark results
+        isl: Input sequence length to filter (e.g., 1024, 8192)
+        osl: Output sequence length to filter (e.g., 1024, 8192)
+        base_title: Base title for the chart
+    
+    Returns:
+        Plotly Figure for the filtered data
+    """
+    # Filter by ISL/OSL
+    filtered_df = df[(df['isl'] == isl) & (df['osl'] == osl)].copy()
+    
+    if filtered_df.empty:
+        return go.Figure()
+    
+    # Format title with seq len info
+    seq_len_str = f"{format_seq_len(isl)}{format_seq_len(osl)}"
+    title = f"{base_title} {seq_len_str} (MTP vs non-MTP)"
+    
+    return create_pareto_chart(filtered_df, title=title)
+
+
 def main():
     parser = argparse.ArgumentParser(description='Parse benchmark.out files and generate reports')
     parser.add_argument('path', type=str, help='Root path to search for benchmark.out files')
     parser.add_argument('--output', '-o', type=str, default='benchmark_results.html',
                         help='Output HTML file path')
-    parser.add_argument('--csv', type=str, help='Also save results to CSV file')
+    parser.add_argument('--csv', type=str, help='Save results to CSV file (default: scripts/benchmark_results.csv)')
+    parser.add_argument('--no-csv', action='store_true', help='Disable automatic CSV generation')
     parser.add_argument('--title', type=str, default='SGLang DSR1 FP8 H100 Disaggregated 1k1k/1k8k/8k1k (MTP vs non-MTP)',
                         help='Title for the charts')
     parser.add_argument('--png', type=str, help='Save Pareto chart as PNG image file')
-    parser.add_argument('--svg', type=str, help='Save Pareto chart as SVG image file (vector, higher quality)')
+    parser.add_argument('--svg', type=str, help='Save main Pareto chart as SVG (default: scripts/pareto.svg)')
+    parser.add_argument('--no-svg', action='store_true',
+                        help='Disable automatic SVG generation')
+    parser.add_argument('--svg-prefix', type=str, default='pareto',
+                        help='Prefix for SVG files (default: pareto)')
     
     args = parser.parse_args()
     
@@ -569,10 +600,17 @@ def main():
     print(df.to_string(index=False))
     print("=" * 80)
     
-    # Save to CSV if requested
-    if args.csv:
-        df.to_csv(args.csv, index=False)
-        print(f"\nSaved CSV to: {args.csv}")
+    # Determine scripts directory (where the script is located)
+    script_dir = Path(__file__).parent.resolve()
+    
+    # Save to CSV by default (unless --no-csv is specified)
+    if not args.no_csv:
+        if args.csv:
+            csv_path = Path(args.csv)
+        else:
+            csv_path = script_dir / "benchmark_results.csv"
+        df.to_csv(csv_path, index=False)
+        print(f"\nSaved CSV to: {csv_path}")
     
     # Create charts
     pareto_fig = create_pareto_chart(df, title=args.title)
@@ -582,10 +620,41 @@ def main():
         pareto_fig.write_image(args.png)
         print(f"\nSaved Pareto chart (PNG) to: {args.png}")
     
-    # Save Pareto chart as SVG if requested
-    if args.svg:
-        pareto_fig.write_image(args.svg, format='svg')
-        print(f"\nSaved Pareto chart (SVG) to: {args.svg}")
+    # Save SVG files by default (unless --no-svg is specified)
+    if not args.no_svg:
+        # Save main Pareto chart
+        if args.svg:
+            main_svg_path = Path(args.svg)
+        else:
+            main_svg_path = script_dir / f"{args.svg_prefix}.svg"
+        
+        pareto_fig.write_image(str(main_svg_path), format='svg')
+        print(f"\nSaved main Pareto chart (SVG) to: {main_svg_path}")
+        
+        # Generate separate SVG files for each ISL/OSL combination
+        seq_combinations = [
+            (1024, 1024, '1k1k'),
+            (1024, 8192, '1k8k'),
+            (8192, 1024, '8k1k'),
+        ]
+        
+        base_title = args.title.split('1k1k')[0].strip() if '1k1k' in args.title else 'SGLang DSR1 FP8 H100 Disaggregated'
+        
+        for isl, osl, seq_name in seq_combinations:
+            # Filter data for this ISL/OSL combination
+            seq_df = df[(df['isl'] == isl) & (df['osl'] == osl)]
+            
+            if seq_df.empty:
+                print(f"\nNo data for {seq_name} (ISL={isl}, OSL={osl}), skipping...")
+                continue
+            
+            # Create chart for this combination
+            seq_fig = create_pareto_chart_by_seq_len(df, isl, osl, base_title=base_title)
+            
+            # Save to SVG in scripts directory
+            svg_filename = script_dir / f"{args.svg_prefix}_{seq_name}.svg"
+            seq_fig.write_image(str(svg_filename), format='svg')
+            print(f"Saved Pareto chart for {seq_name} (SVG) to: {svg_filename}")
     
     # Save to HTML using JSON (avoid binary encoding issues)
     import json
